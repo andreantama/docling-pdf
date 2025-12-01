@@ -1,20 +1,24 @@
 # FastAPI untuk membuat REST API
-fastapi==0.104.1
+fastapi==0.123.0
 
 # Uvicorn sebagai ASGI server untuk menjalankan FastAPI
-uvicorn==0.24.0
+uvicorn==0.38.0
 
 # Redis untuk menyimpan progress ekstraksi
-redis==5.0.1
+redis==7.1.0
 
-# Docling untuk ekstraksi data dari PDF
-docling
+# Docling untuk ekstraksi data dari PDF - install dengan legacy resolver
+docling==2.63.0
 
 # Python-multipart untuk handle file upload
-python-multipart==0.0.6
+python-multipart==0.0.20
 
-# Pydantic untuk validasi data dan model
-pydantic==2.5.0
+# Pydantic untuk validasi data dan model (sudah terinstall sebagai dependency docling)
+# pydantic==2.12.5
+
+# Catatan: Install dengan command berikut jika ada masalah dependencies:
+# python3 -m pip install --use-deprecated=legacy-resolver docling
+# python3 -m pip install fastapi uvicorn redis python-multipart
 
 # UUID untuk generate unique task IDs
 # (sudah built-in di Python, tidak perlu install)
