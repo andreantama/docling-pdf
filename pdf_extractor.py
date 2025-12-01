@@ -5,6 +5,14 @@ from typing import Dict, Any
 from docling.document_converter import DocumentConverter
 from redis_manager import RedisManager
 
+# Import untuk fallback extraction
+try:
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    PYMUPDF_AVAILABLE = False
+    print("Warning: PyMuPDF not available for fallback extraction")
+
 class PDFExtractor:
     """
     Kelas untuk melakukan ekstraksi data dari file PDF menggunakan Docling
@@ -63,9 +71,40 @@ class PDFExtractor:
                     "Converting PDF with Docling..."
                 )
                 
-                # Konversi PDF menggunakan Docling
-                # Docling akan mengekstrak text, tables, images, dan metadata
-                result = self.converter.convert(temp_file_path)
+                # Konversi PDF menggunakan Docling dengan error handling
+                try:
+                    # Docling akan mengekstrak text, tables, images, dan metadata
+                    result = self.converter.convert(temp_file_path)
+                except Exception as docling_error:
+                    # Jika Docling gagal, coba dengan fallback method
+                    print(f"Docling conversion failed: {docling_error}")
+                    self.redis_manager.update_task_progress(
+                        task_id, 
+                        45, 
+                        "Docling failed, trying fallback extraction..."
+                    )
+                    
+                    # Fallback ke PyMuPDF untuk ekstraksi dasar
+                    extracted_data = await self._fallback_extraction(temp_file_path, task_id)
+                    
+                    # Prepare final result dengan fallback
+                    final_result = {
+                        "filename": filename,
+                        "extraction_successful": True,
+                        "extraction_method": "fallback_pymupdf",
+                        "data": extracted_data,
+                        "metadata": {
+                            "total_pages": len(extracted_data.get("pages", [])),
+                            "total_text_length": len(extracted_data.get("full_text", "")),
+                            "has_tables": len(extracted_data.get("tables", [])) > 0,
+                            "has_images": len(extracted_data.get("images", [])) > 0
+                        },
+                        "warning": f"Used fallback extraction due to: {str(docling_error)}"
+                    }
+                    
+                    # Mark task sebagai completed dengan warning
+                    self.redis_manager.complete_task(task_id, final_result, success=True)
+                    return final_result
                 
                 # Update progress: konversi selesai, mulai parsing hasil
                 self.redis_manager.update_task_progress(
@@ -91,6 +130,7 @@ class PDFExtractor:
                 final_result = {
                     "filename": filename,
                     "extraction_successful": True,
+                    "extraction_method": "docling",
                     "data": extracted_data,
                     "metadata": {
                         "total_pages": len(extracted_data.get("pages", [])),
@@ -245,3 +285,108 @@ class PDFExtractor:
             )
         finally:
             loop.close()
+    
+    async def _fallback_extraction(self, pdf_path: str, task_id: str) -> Dict[str, Any]:
+        """
+        Fallback extraction method menggunakan PyMuPDF jika Docling gagal
+        Args:
+            pdf_path: Path ke file PDF
+            task_id: ID task untuk progress tracking
+        Returns:
+            Dictionary dengan data yang telah diekstrak
+        """
+        if not PYMUPDF_AVAILABLE:
+            # Jika PyMuPDF tidak tersedia, return basic extraction
+            return {
+                "full_text": "Fallback extraction failed - PyMuPDF not available",
+                "pages": [],
+                "tables": [],
+                "images": [],
+                "word_count": 0,
+                "character_count": 0,
+                "extraction_error": "Both Docling and PyMuPDF failed"
+            }
+        
+        try:
+            # Update progress: menggunakan fallback
+            self.redis_manager.update_task_progress(
+                task_id, 
+                50, 
+                "Using PyMuPDF fallback extraction..."
+            )
+            
+            # Buka PDF dengan PyMuPDF
+            pdf_document = fitz.open(pdf_path)
+            
+            # Ekstrak data dari setiap halaman
+            pages = []
+            full_text = ""
+            images_info = []
+            
+            for page_num in range(pdf_document.page_count):
+                page = pdf_document[page_num]
+                
+                # Ekstrak text dari halaman
+                page_text = page.get_text()
+                full_text += page_text + "\n"
+                
+                # Ekstrak informasi gambar dasar
+                image_list = page.get_images()
+                for img_idx, img in enumerate(image_list):
+                    images_info.append({
+                        "page": page_num + 1,
+                        "image_index": img_idx,
+                        "description": f"Image {img_idx + 1} on page {page_num + 1}"
+                    })
+                
+                # Simpan data per halaman
+                pages.append({
+                    "page_number": page_num + 1,
+                    "content": page_text,
+                    "line_count": len(page_text.split('\n')),
+                    "word_count": len(page_text.split()),
+                    "character_count": len(page_text)
+                })
+                
+                # Update progress per halaman
+                progress = 50 + (20 * (page_num + 1) / pdf_document.page_count)
+                self.redis_manager.update_task_progress(
+                    task_id, 
+                    int(progress), 
+                    f"Processed page {page_num + 1}/{pdf_document.page_count} (fallback)"
+                )
+                
+                await asyncio.sleep(0.1)  # Small delay
+            
+            # Tutup PDF document
+            pdf_document.close()
+            
+            # Update progress: finalisasi fallback
+            self.redis_manager.update_task_progress(
+                task_id, 
+                75, 
+                "Fallback extraction completed..."
+            )
+            
+            return {
+                "full_text": full_text.strip(),
+                "pages": pages,
+                "tables": [],  # Table extraction tidak tersedia di fallback
+                "images": images_info,
+                "word_count": len(full_text.split()),
+                "character_count": len(full_text),
+                "extraction_method": "pymupdf_fallback",
+                "note": "Tables extraction not available in fallback mode"
+            }
+            
+        except Exception as e:
+            print(f"Error in fallback extraction: {e}")
+            return {
+                "full_text": "Fallback extraction failed",
+                "pages": [],
+                "tables": [],
+                "images": [],
+                "word_count": 0,
+                "character_count": 0,
+                "extraction_error": f"Fallback extraction failed: {str(e)}"
+            }

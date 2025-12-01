@@ -11,7 +11,9 @@ Project ini adalah API untuk melakukan ekstraksi data dari file PDF menggunakan 
 ├── redis_manager.py     # Manager untuk operasi Redis (progress tracking)
 ├── pdf_extractor.py     # Module ekstraksi PDF menggunakan Docling
 ├── requirements.txt     # Dependencies Python
-└── README.md           # Dokumentasi ini
+├── .env-example         # Template environment variables
+├── README.md           # Dokumentasi ini
+└── venv/               # Virtual environment (dibuat saat setup)
 ```
 
 ## 🚀 Cara Menjalankan
@@ -107,8 +109,14 @@ curl "http://localhost:8000/result/your-task-id"
 
 ## 🛠 Environment Variables
 
-Anda bisa mengatur konfigurasi melalui environment variables:
+Anda bisa mengatur konfigurasi melalui environment variables. Copy `.env-example` ke `.env` dan isi nilai yang diperlukan:
 
+```bash
+cp .env-example .env
+# Edit file .env sesuai kebutuhan
+```
+
+Contoh konfigurasi:
 ```bash
 export REDIS_HOST=localhost
 export REDIS_PORT=6379
@@ -154,9 +162,19 @@ Buka browser dan akses: http://localhost:8000/docs untuk Swagger UI documentatio
 - Cek ukuran file tidak melebihi 50MB
 - Pastikan file tidak corrupt
 
-### Docling Import Error
+### Docling Processing Issues
+Jika Docling menampilkan error "could not find page-dimensions", aplikasi akan tetap mencoba menyelesaikan ekstraksi. Jika gagal total, sistem akan otomatis menggunakan fallback PyMuPDF.
+
 ```bash
+# Jika ada masalah dengan dependencies
 pip install --upgrade docling
+pip install --upgrade PyMuPDF
+```
+
+### Installation Issues
+Jika ada konflik dependencies saat install, gunakan legacy resolver:
+```bash
+pip install --use-deprecated=legacy-resolver -r requirements.txt
 ```
 
 ## 🔧 Development

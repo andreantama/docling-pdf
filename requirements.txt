@@ -10,6 +10,9 @@ redis==7.1.0
 # Docling untuk ekstraksi data dari PDF - install dengan legacy resolver
 docling==2.63.0
 
+# PyMuPDF sebagai fallback jika Docling gagal
+PyMuPDF==1.24.13
+
 # Python-multipart untuk handle file upload
 python-multipart==0.0.20
 
