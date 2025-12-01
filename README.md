@@ -16,13 +16,28 @@ Project ini adalah API untuk melakukan ekstraksi data dari file PDF menggunakan 
 
 ## 🚀 Cara Menjalankan
 
-### 1. Install Dependencies
+### 1. Setup Virtual Environment (Recommended)
 ```bash
 cd /home/tama/Project/python/docling-pdf
+
+# Buat virtual environment
+python -m venv venv
+
+# Aktifkan virtual environment
+# Untuk Linux/macOS:
+source venv/bin/activate
+
+# Untuk Windows:
+# venv\Scripts\activate
+```
+
+### 2. Install Dependencies
+```bash
+# Pastikan virtual environment sudah aktif (akan terlihat (venv) di prompt)
 pip install -r requirements.txt
 ```
 
-### 2. Setup Redis
+### 3. Setup Redis
 Pastikan Redis server berjalan di localhost:6379 (default), atau sesuaikan konfigurasi di `config.py`.
 
 ```bash
@@ -38,12 +53,15 @@ brew services start redis
 # Download dan install Redis dari official website
 ```
 
-### 3. Jalankan API Server
+### 4. Jalankan API Server
 ```bash
+# Pastikan virtual environment sudah aktif
 python main.py
 ```
 
 Server akan berjalan di: http://localhost:8000
+
+**Note:** Untuk keluar dari virtual environment, gunakan command `deactivate`.
 
 ## 📚 API Endpoints
 
@@ -143,8 +161,13 @@ pip install --upgrade docling
 
 ## 🔧 Development
 
-Untuk development mode:
+Untuk development mode dengan virtual environment:
 ```bash
+# Aktifkan virtual environment terlebih dahulu
+source venv/bin/activate  # Linux/macOS
+# atau: venv\Scripts\activate  # Windows
+
+# Set DEBUG mode dan jalankan
 export DEBUG=True
 python main.py
 ```
