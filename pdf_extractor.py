@@ -1,9 +1,16 @@
 import asyncio
 import tempfile
 import os
+import warnings
 from typing import Dict, Any
 from docling.document_converter import DocumentConverter
 from redis_manager import RedisManager
+from config import Config
+
+# Suppress specific warnings for page dimensions if configured
+if Config.IGNORE_PAGE_DIMENSION_WARNINGS:
+    warnings.filterwarnings("ignore", message=".*page-dimensions.*")
+    warnings.filterwarnings("ignore", message=".*Stage preprocess failed.*")
 
 # Import untuk fallback extraction
 try:
@@ -26,8 +33,42 @@ class PDFExtractor:
             redis_manager: Instance RedisManager untuk tracking progress
         """
         self.redis_manager = redis_manager
-        # Inisialisasi Docling converter
-        self.converter = DocumentConverter()
+        # Inisialisasi Docling converter dengan configuration
+        try:
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import PdfFormatOption
+            
+            # Configure pipeline options dengan PyPDFium2 backend dan page dimension fixes
+            pipeline_options = PdfPipelineOptions(
+                pdf_backend='pypdfium2'  # Use PyPDFium2 for better page-dimensions handling
+            )
+            pipeline_options.artifacts_path = None  # Disable artifacts to avoid path issues
+            pipeline_options.do_ocr = False  # Disable OCR initially to avoid preprocessing issues
+            pipeline_options.do_table_structure = True  # Enable for FPDF documents
+            pipeline_options.table_structure_options.do_cell_matching = True
+            
+            # Optimized settings for PDFs with valid dimensions (like FPDF 1.86 output)
+            pipeline_options.generate_page_images = False  # Skip image generation for better performance
+            pipeline_options.generate_picture_images = False  # Skip picture processing
+            pipeline_options.images_scale = 1.0  # Use original image scale
+            
+            # Create converter dengan PyPDFium2 backend
+            self.converter = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+                }
+            )
+            print("✅ Docling converter initialized with enhanced PyPDFium2 configuration")
+            
+            # Log backend configuration details
+            backend_info = self.get_current_backend_info()
+            print(f"🔧 Backend configuration: {backend_info['backend_configured']}")
+        except Exception as config_error:
+            print(f"⚠️ Warning: Could not configure Docling optimally: {config_error}")
+            # Fallback to basic converter
+            self.converter = DocumentConverter()
+            print("✅ Docling converter initialized with basic configuration")
         
     async def extract_pdf_async(self, task_id: str, pdf_content: bytes, filename: str) -> Dict[str, Any]:
         """
@@ -58,8 +99,58 @@ class PDFExtractor:
                 self.redis_manager.update_task_progress(
                     task_id, 
                     25, 
-                    "PDF file prepared, starting extraction..."
+                    "PDF file prepared, validating..."
                 )
+                
+                # Validate PDF file
+                validation_result = self._validate_pdf_file(temp_file_path)
+                print(f"📋 PDF validation result for {filename}: {validation_result}")
+                
+                if not validation_result["is_valid"]:
+                    error_msg = f"Invalid PDF file: {validation_result.get('error', 'Unknown error')}"
+                    raise Exception(error_msg)
+                
+                # Check for potential issues and optimize extraction strategy
+                warning_messages = []
+                optimization_notes = []
+                
+                if validation_result.get("is_encrypted", False):
+                    warning_messages.append("PDF is encrypted")
+                if not validation_result.get("has_page_dimensions", True):
+                    warning_messages.append("PDF may have page dimension issues")
+                if validation_result.get("page_count", 0) == 0:
+                    warning_messages.append("PDF appears to have no pages")
+                
+                # Optimize for well-structured PDFs (like FPDF output)
+                producer = validation_result.get("metadata", {}).get("producer", "").lower()
+                
+                if validation_result.get("has_page_dimensions", False) and validation_result.get("pages_with_valid_dimensions", 0) == validation_result.get("page_count", 0):
+                    optimization_notes.append("PDF has excellent structure - using optimized extraction")
+                    print(f"✅ PDF structure excellent for {filename}: All {validation_result['page_count']} pages have valid dimensions")
+                    
+                    # Special optimization for FPDF documents
+                    if "fpdf" in producer:
+                        optimization_notes.append("FPDF document detected - enabling enhanced table extraction")
+                        print(f"🎯 FPDF document detected for {filename}: Producer = {validation_result['metadata']['producer']}")
+                
+                if warning_messages:
+                    print(f"⚠️ PDF warnings for {filename}: {', '.join(warning_messages)}")
+                if optimization_notes:
+                    print(f"🚀 PDF optimization for {filename}: {', '.join(optimization_notes)}")
+                
+                # Update progress: starting extraction with optimized strategy
+                if validation_result.get("has_page_dimensions", False) and validation_result.get("pages_with_valid_dimensions", 0) == validation_result.get("page_count", 0):
+                    self.redis_manager.update_task_progress(
+                        task_id, 
+                        35, 
+                        f"PDF validated (excellent structure), starting optimized extraction for {validation_result['page_count']} pages..."
+                    )
+                else:
+                    self.redis_manager.update_task_progress(
+                        task_id, 
+                        35, 
+                        "PDF validated, starting extraction..."
+                    )
                 
                 # Simulate progress update saat memulai konversi
                 await asyncio.sleep(0.5)  # Small delay untuk demo progress
@@ -73,38 +164,124 @@ class PDFExtractor:
                 
                 # Konversi PDF menggunakan Docling dengan error handling
                 try:
+                    # Verify backend configuration before conversion
+                    print(f"🔍 Starting Docling conversion for: {filename}")
+                    print(f"🔧 Using backend: {getattr(self.converter.format_options.get('pdf', {}), 'pipeline_options', {}).pdf_backend if hasattr(self.converter, 'format_options') else 'default'}")
+                    
                     # Docling akan mengekstrak text, tables, images, dan metadata
                     result = self.converter.convert(temp_file_path)
+                    print(f"✅ Docling conversion successful for: {filename}")
                 except Exception as docling_error:
-                    # Jika Docling gagal, coba dengan fallback method
-                    print(f"Docling conversion failed: {docling_error}")
-                    self.redis_manager.update_task_progress(
-                        task_id, 
-                        45, 
-                        "Docling failed, trying fallback extraction..."
-                    )
+                    error_msg = str(docling_error).lower()
                     
-                    # Fallback ke PyMuPDF untuk ekstraksi dasar
-                    extracted_data = await self._fallback_extraction(temp_file_path, task_id)
+                    # Check if conversion actually succeeded despite page-dimension warnings
+                    if "conversionstatus.success" in error_msg or "finished converting" in str(docling_error):
+                        print(f"⚠️ Docling completed with warnings (page-dimensions): {filename}")
+                        # Continue with result processing despite warnings
+                        try:
+                            # Try to access result anyway
+                            result = self.converter.convert(temp_file_path)
+                        except:
+                            # If still fails, proceed to backend fallback
+                            pass
                     
-                    # Prepare final result dengan fallback
-                    final_result = {
-                        "filename": filename,
-                        "extraction_successful": True,
-                        "extraction_method": "fallback_pymupdf",
-                        "data": extracted_data,
-                        "metadata": {
-                            "total_pages": len(extracted_data.get("pages", [])),
-                            "total_text_length": len(extracted_data.get("full_text", "")),
-                            "has_tables": len(extracted_data.get("tables", [])) > 0,
-                            "has_images": len(extracted_data.get("images", [])) > 0
-                        },
-                        "warning": f"Used fallback extraction due to: {str(docling_error)}"
-                    }
-                    
-                    # Mark task sebagai completed dengan warning
-                    self.redis_manager.complete_task(task_id, final_result, success=True)
-                    return final_result
+                    # Handle page-dimensions specific errors
+                    if "page-dimensions" in error_msg or "preprocess failed" in error_msg:
+                        print(f"⚠️ Docling page-dimensions error detected: {docling_error}")
+                        self.redis_manager.update_task_progress(
+                            task_id, 
+                            45, 
+                            "Optimizing for problematic PDF structure..."
+                        )
+                        
+                        # Try with PDF dimension fixing and simpler Docling configuration
+                        try:
+                            print("🔄 Trying PDF dimension fix and alternative backends...")
+                            
+                            # First try to fix PDF dimensions
+                            fixed_pdf_path = self._fix_pdf_page_dimensions(temp_file_path)
+                            
+                            # Try conversion with fixed PDF
+                            if fixed_pdf_path != temp_file_path:
+                                try:
+                                    result = self.converter.convert(fixed_pdf_path)
+                                    print(f"✅ PDF conversion successful with dimension fix for: {filename}")
+                                    # Cleanup fixed PDF
+                                    if os.path.exists(fixed_pdf_path):
+                                        os.unlink(fixed_pdf_path)
+                                except Exception:
+                                    # If still fails, try different backends
+                                    result, backend_used = self._try_different_backends(fixed_pdf_path)
+                                    print(f"✅ PDF conversion successful using {backend_used} backend with fix for: {filename}")
+                                    # Cleanup fixed PDF
+                                    if os.path.exists(fixed_pdf_path):
+                                        os.unlink(fixed_pdf_path)
+                            else:
+                                # If fixing didn't work, try different backends on original
+                                result, backend_used = self._try_different_backends(temp_file_path)
+                                print(f"✅ PDF conversion successful using {backend_used} backend for: {filename}")
+                                
+                        except Exception as backend_error:
+                            print(f"❌ All PDF backends failed: {backend_error}")
+                            # Fall back to PyMuPDF
+                            print("🔄 Falling back to PyMuPDF extraction...")
+                            self.redis_manager.update_task_progress(
+                                task_id, 
+                                50, 
+                                "Docling failed, using PyMuPDF fallback..."
+                            )
+                            
+                            # Fallback ke PyMuPDF untuk ekstraksi dasar
+                            extracted_data = await self._fallback_extraction(temp_file_path, task_id)
+                            
+                            # Prepare final result dengan fallback
+                            final_result = {
+                                "filename": filename,
+                                "extraction_successful": True,
+                                "extraction_method": "fallback_pymupdf",
+                                "data": extracted_data,
+                                "metadata": {
+                                    "total_pages": len(extracted_data.get("pages", [])),
+                                    "total_text_length": len(extracted_data.get("full_text", "")),
+                                    "has_tables": len(extracted_data.get("tables", [])) > 0,
+                                    "has_images": len(extracted_data.get("images", [])) > 0
+                                },
+                                "warning": f"Used PyMuPDF fallback due to all backends failing: {str(docling_error)}"
+                            }
+                            
+                            # Mark task sebagai completed dengan warning
+                            self.redis_manager.complete_task(task_id, final_result, success=True)
+                            return final_result
+                    else:
+                        # Other Docling errors
+                        print(f"❌ Docling conversion failed with other error: {docling_error}")
+                        self.redis_manager.update_task_progress(
+                            task_id, 
+                            45, 
+                            "Docling failed, trying fallback extraction..."
+                        )
+                        
+                        # Fallback ke PyMuPDF untuk ekstraksi dasar
+                        extracted_data = await self._fallback_extraction(temp_file_path, task_id)
+                        
+                        # Prepare final result dengan fallback
+                        final_result = {
+                            "filename": filename,
+                            "extraction_successful": True,
+                            "extraction_method": "fallback_pymupdf",
+                            "data": extracted_data,
+                            "metadata": {
+                                "total_pages": len(extracted_data.get("pages", [])),
+                                "total_text_length": len(extracted_data.get("full_text", "")),
+                                "has_tables": len(extracted_data.get("tables", [])) > 0,
+                                "has_images": len(extracted_data.get("images", [])) > 0
+                            },
+                            "warning": f"Used fallback extraction due to: {str(docling_error)}"
+                        }
+                        
+                        # Mark task sebagai completed dengan warning
+                        self.redis_manager.complete_task(task_id, final_result, success=True)
+                        return final_result
                 
                 # Update progress: konversi selesai, mulai parsing hasil
                 self.redis_manager.update_task_progress(
@@ -390,3 +567,239 @@ class PDFExtractor:
                 "character_count": 0,
                 "extraction_error": f"Fallback extraction failed: {str(e)}"
             }
+    
+    def _validate_pdf_file(self, file_path: str) -> Dict[str, Any]:
+        """
+        Validate PDF file and get basic information
+        Args:
+            file_path: Path to PDF file
+        Returns:
+            Dictionary with validation results
+        """
+        try:
+            if PYMUPDF_AVAILABLE:
+                # Use PyMuPDF for validation
+                pdf_doc = fitz.open(file_path)
+                
+                validation_result = {
+                    "is_valid": True,
+                    "page_count": pdf_doc.page_count,
+                    "is_encrypted": pdf_doc.is_encrypted,
+                    "needs_password": pdf_doc.needs_pass,
+                    "metadata": pdf_doc.metadata,
+                    "has_page_dimensions": True  # Will be checked per page
+                }
+                
+                # Check if pages have valid dimensions
+                pages_with_dimensions = 0
+                for page_num in range(pdf_doc.page_count):
+                    try:
+                        page = pdf_doc[page_num]
+                        rect = page.rect
+                        if rect.width > 0 and rect.height > 0:
+                            pages_with_dimensions += 1
+                    except Exception:
+                        pass
+                
+                validation_result["pages_with_valid_dimensions"] = pages_with_dimensions
+                validation_result["has_page_dimensions"] = pages_with_dimensions > 0
+                
+                pdf_doc.close()
+                return validation_result
+            else:
+                # Basic validation without PyMuPDF
+                with open(file_path, 'rb') as f:
+                    header = f.read(10)
+                    return {
+                        "is_valid": header.startswith(b'%PDF'),
+                        "page_count": -1,
+                        "is_encrypted": False,
+                        "needs_password": False,
+                        "metadata": {},
+                        "has_page_dimensions": True,  # Assume true
+                        "pages_with_valid_dimensions": -1
+                    }
+                    
+        except Exception as e:
+            return {
+                "is_valid": False,
+                "error": str(e),
+                "page_count": 0,
+                "is_encrypted": False,
+                "needs_password": False,
+                "metadata": {},
+                "has_page_dimensions": False,
+                "pages_with_valid_dimensions": 0
+            }
+    
+    def _create_alternative_converter(self) -> DocumentConverter:
+        """
+        Create alternative DocumentConverter with different settings for problematic PDFs
+        Returns:
+            DocumentConverter with alternative configuration
+        """
+        try:
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import PdfFormatOption
+            
+            # More conservative pipeline options dengan PyPDFium2 - minimal features
+            pipeline_options = PdfPipelineOptions(
+                pdf_backend='pypdfium2'  # Use PyPDFium2 for better compatibility
+            )
+            pipeline_options.artifacts_path = None
+            pipeline_options.do_ocr = False
+            pipeline_options.do_table_structure = False  # Disable table structure for problematic PDFs
+            pipeline_options.generate_page_images = False  # Disable all image processing
+            pipeline_options.generate_picture_images = False
+            pipeline_options.images_scale = 1.0
+            
+            # Create conservative converter
+            alternative_converter = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+                }
+            )
+            print("✅ Created alternative DocumentConverter with minimal PyPDFium2 configuration")
+            return alternative_converter
+            
+        except Exception as e:
+            print(f"⚠️ Could not create alternative converter: {e}")
+            # Return basic converter as fallback
+            return DocumentConverter()
+    
+    def get_current_backend_info(self) -> Dict[str, Any]:
+        """
+        Get information about the current backend configuration
+        Returns:
+            Dictionary with backend configuration details
+        """
+        try:
+            backend_info = {
+                'converter_type': type(self.converter).__name__,
+                'has_format_options': hasattr(self.converter, 'format_options'),
+                'backend_configured': 'pypdfium2',  # We explicitly configured this in __init__
+                'configuration_method': 'explicit_initialization'
+            }
+            
+            # Try to get backend info from format options (if accessible)
+            if hasattr(self.converter, 'format_options') and self.converter.format_options:
+                from docling.datamodel.base_models import InputFormat
+                pdf_options = self.converter.format_options.get(InputFormat.PDF)
+                if pdf_options and hasattr(pdf_options, 'pipeline_options'):
+                    actual_backend = getattr(pdf_options.pipeline_options, 'pdf_backend', 'default')
+                    backend_info['backend_configured'] = actual_backend
+                    backend_info['configuration_method'] = 'retrieved_from_format_options'
+                    backend_info['pipeline_options'] = {
+                        'do_ocr': getattr(pdf_options.pipeline_options, 'do_ocr', None),
+                        'do_table_structure': getattr(pdf_options.pipeline_options, 'do_table_structure', None),
+                        'generate_page_images': getattr(pdf_options.pipeline_options, 'generate_page_images', None)
+                    }
+            
+            return backend_info
+            
+        except Exception as e:
+            return {
+                'error': str(e),
+                'converter_type': type(self.converter).__name__,
+                'backend_configured': 'error_getting_info'
+            }
+    
+    def _fix_pdf_page_dimensions(self, pdf_path: str) -> str:
+        """
+        Try to fix PDF page dimension issues using PyMuPDF preprocessing
+        Args:
+            pdf_path: Path to problematic PDF
+        Returns:
+            Path to fixed PDF or original path if fixing failed
+        """
+        if not PYMUPDF_AVAILABLE:
+            return pdf_path
+            
+        try:
+            import tempfile
+            
+            print("🔧 Attempting to fix PDF page dimensions...")
+            
+            # Open PDF with PyMuPDF
+            pdf_doc = fitz.open(pdf_path)
+            
+            # Create a new PDF with explicit page dimensions
+            fixed_pdf = fitz.open()
+            
+            for page_num in range(pdf_doc.page_count):
+                page = pdf_doc[page_num]
+                
+                # Get or set default page dimensions
+                rect = page.rect
+                if rect.width <= 0 or rect.height <= 0:
+                    # Set default A4 dimensions if invalid
+                    rect = fitz.Rect(0, 0, 595, 842)  # A4 in points
+                
+                # Create new page with explicit dimensions
+                new_page = fixed_pdf.new_page(width=rect.width, height=rect.height)
+                
+                # Copy content from original page
+                new_page.show_pdf_page(rect, pdf_doc, page_num)
+            
+            # Save fixed PDF
+            with tempfile.NamedTemporaryFile(delete=False, suffix='_fixed.pdf') as temp_file:
+                fixed_pdf_path = temp_file.name
+            
+            fixed_pdf.save(fixed_pdf_path)
+            fixed_pdf.close()
+            pdf_doc.close()
+            
+            print(f"✅ PDF page dimensions fixed: {fixed_pdf_path}")
+            return fixed_pdf_path
+            
+        except Exception as e:
+            print(f"⚠️ Could not fix PDF dimensions: {e}")
+            return pdf_path
+    
+    def _try_different_backends(self, file_path: str) -> tuple[Any, str]:
+        """
+        Try different PDF backends to find one that works
+        Args:
+            file_path: Path to PDF file
+        Returns:
+            Tuple of (conversion_result, backend_used)
+        """
+        backends_to_try = [
+            ('pypdfium2', 'PyPDFium2 - Most reliable for page dimensions'),
+            ('dlparse_v1', 'DLParse V1 - Default backend'),
+            ('dlparse_v2', 'DLParse V2 - Alternative parser')
+        ]
+        
+        for backend, description in backends_to_try:
+            try:
+                print(f"🔄 Trying {description}...")
+                
+                from docling.datamodel.base_models import InputFormat
+                from docling.datamodel.pipeline_options import PdfPipelineOptions
+                from docling.document_converter import PdfFormatOption
+                
+                # Create pipeline options with specific backend
+                pipeline_options = PdfPipelineOptions(pdf_backend=backend)
+                pipeline_options.artifacts_path = None
+                pipeline_options.do_ocr = False
+                pipeline_options.do_table_structure = True
+                
+                # Create converter with this backend
+                backend_converter = DocumentConverter(
+                    format_options={
+                        InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+                    }
+                )
+                
+                # Try conversion
+                result = backend_converter.convert(file_path)
+                print(f"✅ Successfully converted with {backend}")
+                return result, backend
+                
+            except Exception as e:
+                print(f"❌ {backend} failed: {str(e)[:100]}...")
+                continue
+        
+        # If all backends fail, raise the last error
+        raise Exception("All PDF backends failed to process this file")

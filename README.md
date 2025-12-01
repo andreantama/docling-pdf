@@ -2,6 +2,18 @@
 
 Project ini adalah API untuk melakukan ekstraksi data dari file PDF menggunakan Docling dengan progress tracking di Redis.
 
+## ✨ Fitur Utama
+
+- 📄 **Ekstraksi PDF Komprehensif** dengan Docling + PyPDFium2 backend
+- 📊 **Progress Tracking Real-time** menggunakan Redis
+- 🔄 **Multi-Backend Fallback** (PyPDFium2 → DLParse → PyMuPDF)
+- 🛡️ **Error Handling Robust** untuk PDF bermasalah
+- 🚀 **API REST Asynchronous** dengan FastAPI
+- 📈 **Monitoring & Health Check** endpoints
+- 🔍 **Ekstraksi Multi-format**: Text, Tables, Images, Metadata
+- 📱 **CORS Support** untuk integrasi frontend
+- 🐳 **Production Ready** dengan comprehensive logging
+
 ## 📁 Struktur Project
 
 ```
@@ -163,18 +175,54 @@ Buka browser dan akses: http://localhost:8000/docs untuk Swagger UI documentatio
 - Pastikan file tidak corrupt
 
 ### Docling Processing Issues
-Jika Docling menampilkan error "could not find page-dimensions", aplikasi akan tetap mencoba menyelesaikan ekstraksi. Jika gagal total, sistem akan otomatis menggunakan fallback PyMuPDF.
 
+#### "could not find page-dimensions" Error
+Ini adalah error umum yang terjadi ketika Docling tidak dapat menentukan dimensi halaman PDF. Aplikasi telah dioptimasi untuk menangani error ini:
+
+1. **PyPDFium2 Backend**: Sistem menggunakan PyPDFium2 sebagai backend utama yang lebih robust
+2. **Multi-Backend Fallback**: Mencoba berbagai backend (pypdfium2, dlparse_v1, dlparse_v2) secara otomatis  
+3. **PyMuPDF Fallback**: Jika semua backend Docling gagal, sistem otomatis beralih ke PyMuPDF
+4. **Detailed Logging**: Error akan dicatat dengan detail untuk debugging
+
+**Backend yang tersedia:**
+- **pypdfium2** (Primary) - Most reliable for page dimensions
+- **dlparse_v1** - Default Docling backend
+- **dlparse_v2** - Alternative Docling parser
+
+**Penyebab umum:**
+- PDF corrupt atau tidak standar
+- PDF dengan metadata yang hilang/rusak
+- PDF yang di-encrypt
+- PDF hasil scan tanpa layer text
+
+**Solusi:**
 ```bash
-# Jika ada masalah dengan dependencies
-pip install --upgrade docling
-pip install --upgrade PyMuPDF
+# Update dependencies
+pip install --upgrade docling pypdfium2
+
+# Jika masih bermasalah, install ulang
+pip uninstall docling pypdfium2
+pip install --use-deprecated=legacy-resolver -r requirements.txt
 ```
 
 ### Installation Issues
 Jika ada konflik dependencies saat install, gunakan legacy resolver:
 ```bash
 pip install --use-deprecated=legacy-resolver -r requirements.txt
+```
+
+### Performance Issues
+Jika ekstraksi lambat:
+- Pastikan Redis tidak penuh
+- Cek ukuran file PDF (maksimal 50MB)
+- Monitor penggunaan memory sistem
+
+### Debug Mode
+Untuk troubleshooting lebih detail:
+```bash
+export DEBUG=True
+export LOG_LEVEL=DEBUG
+python main.py
 ```
 
 ## 🔧 Development
