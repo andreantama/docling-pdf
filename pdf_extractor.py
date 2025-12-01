@@ -443,26 +443,6 @@ class PDFExtractor:
                 "parsing_error": str(e)
             }
     
-    def extract_pdf_sync(self, task_id: str, pdf_content: bytes, filename: str) -> Dict[str, Any]:
-        """
-        Synchronous wrapper untuk ekstraksi PDF
-        Args:
-            task_id: ID task untuk tracking progress
-            pdf_content: Binary content dari file PDF  
-            filename: Nama file PDF
-        Returns:
-            Dictionary hasil ekstraksi
-        """
-        # Jalankan async method dalam event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(
-                self.extract_pdf_async(task_id, pdf_content, filename)
-            )
-        finally:
-            loop.close()
-    
     async def _fallback_extraction(self, pdf_path: str, task_id: str) -> Dict[str, Any]:
         """
         Fallback extraction method menggunakan PyMuPDF jika Docling gagal
@@ -630,79 +610,6 @@ class PDFExtractor:
                 "metadata": {},
                 "has_page_dimensions": False,
                 "pages_with_valid_dimensions": 0
-            }
-    
-    def _create_alternative_converter(self) -> DocumentConverter:
-        """
-        Create alternative DocumentConverter with different settings for problematic PDFs
-        Returns:
-            DocumentConverter with alternative configuration
-        """
-        try:
-            from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import PdfPipelineOptions
-            from docling.document_converter import PdfFormatOption
-            
-            # More conservative pipeline options dengan PyPDFium2 - minimal features
-            pipeline_options = PdfPipelineOptions(
-                pdf_backend='pypdfium2'  # Use PyPDFium2 for better compatibility
-            )
-            pipeline_options.artifacts_path = None
-            pipeline_options.do_ocr = False
-            pipeline_options.do_table_structure = False  # Disable table structure for problematic PDFs
-            pipeline_options.generate_page_images = False  # Disable all image processing
-            pipeline_options.generate_picture_images = False
-            pipeline_options.images_scale = 1.0
-            
-            # Create conservative converter
-            alternative_converter = DocumentConverter(
-                format_options={
-                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-                }
-            )
-            print("✅ Created alternative DocumentConverter with minimal PyPDFium2 configuration")
-            return alternative_converter
-            
-        except Exception as e:
-            print(f"⚠️ Could not create alternative converter: {e}")
-            # Return basic converter as fallback
-            return DocumentConverter()
-    
-    def get_current_backend_info(self) -> Dict[str, Any]:
-        """
-        Get information about the current backend configuration
-        Returns:
-            Dictionary with backend configuration details
-        """
-        try:
-            backend_info = {
-                'converter_type': type(self.converter).__name__,
-                'has_format_options': hasattr(self.converter, 'format_options'),
-                'backend_configured': 'pypdfium2',  # We explicitly configured this in __init__
-                'configuration_method': 'explicit_initialization'
-            }
-            
-            # Try to get backend info from format options (if accessible)
-            if hasattr(self.converter, 'format_options') and self.converter.format_options:
-                from docling.datamodel.base_models import InputFormat
-                pdf_options = self.converter.format_options.get(InputFormat.PDF)
-                if pdf_options and hasattr(pdf_options, 'pipeline_options'):
-                    actual_backend = getattr(pdf_options.pipeline_options, 'pdf_backend', 'default')
-                    backend_info['backend_configured'] = actual_backend
-                    backend_info['configuration_method'] = 'retrieved_from_format_options'
-                    backend_info['pipeline_options'] = {
-                        'do_ocr': getattr(pdf_options.pipeline_options, 'do_ocr', None),
-                        'do_table_structure': getattr(pdf_options.pipeline_options, 'do_table_structure', None),
-                        'generate_page_images': getattr(pdf_options.pipeline_options, 'generate_page_images', None)
-                    }
-            
-            return backend_info
-            
-        except Exception as e:
-            return {
-                'error': str(e),
-                'converter_type': type(self.converter).__name__,
-                'backend_configured': 'error_getting_info'
             }
     
     def _fix_pdf_page_dimensions(self, pdf_path: str) -> str:
