@@ -1,0 +1,26 @@
+# FastAPI untuk membuat REST API
+fastapi==0.104.1
+
+# Uvicorn sebagai ASGI server untuk menjalankan FastAPI
+uvicorn==0.24.0
+
+# Redis untuk menyimpan progress ekstraksi
+redis==5.0.1
+
+# Docling untuk ekstraksi data dari PDF
+docling
+
+# Python-multipart untuk handle file upload
+python-multipart==0.0.6
+
+# Pydantic untuk validasi data dan model
+pydantic==2.5.0
+
+# UUID untuk generate unique task IDs
+# (sudah built-in di Python, tidak perlu install)
+
+# Asyncio untuk async operations
+# (sudah built-in di Python, tidak perlu install)
+
+# JSON untuk serialization
+# (sudah built-in di Python, tidak perlu install)
