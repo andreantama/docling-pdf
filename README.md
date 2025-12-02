@@ -275,6 +275,7 @@ Mode debug mengaktifkan auto-reload saat file berubah.
 
 ## 🚀 Production Deployment
 
+### Traditional Deployment
 ```bash
 # Setup production environment
 cp .env.example .env
@@ -289,6 +290,23 @@ export WORKER_POLL_INTERVAL=1.0 # Faster polling untuk production
 # Start with process manager (contoh: systemd, supervisor, PM2)
 python3 main.py
 ```
+
+### Docker Deployment 🐳
+```bash
+# Quick start dengan Docker Compose
+docker-compose up --build -d
+
+# API akan tersedia di: http://localhost:3111
+# Health check: curl http://localhost:3111/health
+
+# View logs
+docker-compose logs -f pdf-extraction-api
+
+# Stop services
+docker-compose down
+```
+
+Untuk dokumentasi lengkap Docker deployment, lihat [DOCKER.md](DOCKER.md).
 
 Untuk production deployment, pertimbangkan menggunakan:
 - **Process Manager**: systemd, supervisor, atau PM2

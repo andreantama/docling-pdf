@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  pdf-extraction-api:
+    build: .
+    ports:
+      - "3111:3111"
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=3111
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - WORKER_COUNT=3
+      - ENABLE_WORKERS=true
+      - WORKER_POLL_INTERVAL=2.0
+      - MAX_QUEUE_SIZE=100
+      - MAX_FILE_SIZE=52428800
+      - DEBUG=false
+    depends_on:
+      - redis
+    volumes:
+      - ./logs:/app/logs  # Optional: for logging
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3111/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"  # Optional: expose Redis port
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  redis_data:
+    driver: local
