@@ -32,7 +32,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"  # Optional: expose Redis port
+      - "6333:6379"  # Optional: expose Redis port
     volumes:
       - redis_data:/data
     restart: unless-stopped
