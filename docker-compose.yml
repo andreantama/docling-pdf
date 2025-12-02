@@ -9,7 +9,7 @@ services:
       - API_HOST=0.0.0.0
       - API_PORT=3111
       - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_PORT=6333
       - REDIS_DB=0
       - WORKER_COUNT=3
       - ENABLE_WORKERS=true
