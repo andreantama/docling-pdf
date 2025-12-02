@@ -28,3 +28,13 @@ class Config:
     API_HOST = os.getenv('API_HOST', '0.0.0.0')     # Host untuk API server
     API_PORT = int(os.getenv('API_PORT', 8000))     # Port untuk API server
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'  # Mode debug
+    
+    # Worker Configuration
+    WORKER_COUNT = int(os.getenv('WORKER_COUNT', 3))  # Jumlah worker yang akan berjalan
+    WORKER_POLL_INTERVAL = float(os.getenv('WORKER_POLL_INTERVAL', 2.0))  # Interval polling queue dalam detik
+    ENABLE_WORKERS = os.getenv('ENABLE_WORKERS', 'True').lower() == 'true'  # Enable/disable worker system
+    
+    # Queue Configuration
+    QUEUE_NAME = os.getenv('QUEUE_NAME', 'pdf_extraction_queue')  # Nama queue Redis
+    MAX_QUEUE_SIZE = int(os.getenv('MAX_QUEUE_SIZE', 100))  # Maksimal ukuran queue
+    WORKER_TIMEOUT = int(os.getenv('WORKER_TIMEOUT', 300))  # Timeout untuk worker dalam detik

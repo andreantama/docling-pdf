@@ -1,7 +1,8 @@
 import redis
 import json
 import uuid
-from typing import Dict, Any, Optional
+import time
+from typing import Dict, Any, Optional, List
 from config import Config
 
 class RedisManager:
@@ -15,14 +16,24 @@ class RedisManager:
         Inisialisasi koneksi Redis menggunakan konfigurasi dari Config class
         """
         try:
-            # Membuat koneksi ke Redis server
+            # Membuat koneksi ke Redis server untuk text data
             self.redis_client = redis.Redis(
                 host=Config.REDIS_HOST,
                 port=Config.REDIS_PORT,
                 db=Config.REDIS_DB,
                 password=Config.REDIS_PASSWORD,
-                decode_responses=True  # Otomatis decode bytes ke string
+                decode_responses=True  # Otomatis decode bytes ke string untuk JSON data
             )
+            
+            # Membuat koneksi terpisah untuk binary data (PDF content)
+            self.redis_binary = redis.Redis(
+                host=Config.REDIS_HOST,
+                port=Config.REDIS_PORT,
+                db=Config.REDIS_DB,
+                password=Config.REDIS_PASSWORD,
+                decode_responses=False  # Keep binary data as bytes
+            )
+            
             # Test koneksi
             self.redis_client.ping()
             print("✅ Connected to Redis successfully")
@@ -192,3 +203,135 @@ class RedisManager:
         except Exception as e:
             print(f"Error getting all tasks: {e}")
             return []
+    
+    # ===== QUEUE MANAGEMENT METHODS =====
+    
+    def enqueue_pdf_job(self, task_id: str, pdf_content: bytes, filename: str) -> bool:
+        """
+        Menambahkan job PDF extraction ke queue
+        Args:
+            task_id: ID task yang sudah dibuat
+            pdf_content: Binary content PDF
+            filename: Nama file PDF
+        Returns:
+            True jika berhasil menambahkan ke queue
+        """
+        try:
+            # Cek ukuran queue
+            queue_size = self.redis_client.llen(Config.QUEUE_NAME)
+            if queue_size >= Config.MAX_QUEUE_SIZE:
+                print(f"Queue is full ({queue_size}/{Config.MAX_QUEUE_SIZE})")
+                return False
+            
+            # Simpan PDF content ke Redis dengan key terpisah menggunakan binary connection
+            pdf_key = f"pdf_content:{task_id}"
+            self.redis_binary.setex(pdf_key, Config.TASK_EXPIRY, pdf_content)
+            
+            # Buat job data
+            job_data = {
+                "task_id": task_id,
+                "filename": filename,
+                "pdf_key": pdf_key,
+                "queued_at": time.time()
+            }
+            
+            # Push job ke queue (FIFO - First In First Out)
+            self.redis_client.lpush(Config.QUEUE_NAME, json.dumps(job_data))
+            
+            # Update task status menjadi queued
+            self.update_task_progress(
+                task_id, 5, "Job added to processing queue", "queued"
+            )
+            
+            print(f"✅ Job {task_id} added to queue. Queue size: {queue_size + 1}")
+            return True
+            
+        except Exception as e:
+            print(f"Error enqueuing job: {e}")
+            return False
+    
+    def dequeue_pdf_job(self) -> Optional[Dict[str, Any]]:
+        """
+        Mengambil job PDF extraction dari queue
+        Returns:
+            Dict dengan data job atau None jika queue kosong
+        """
+        try:
+            # Ambil job dari queue dengan timeout (blocking pop)
+            job_data = self.redis_client.brpop(Config.QUEUE_NAME, timeout=1)
+            
+            if job_data:
+                # Parse job data
+                queue_name, job_json = job_data
+                job = json.loads(job_json)
+                
+                # Ambil PDF content dari Redis menggunakan binary connection
+                pdf_content = self.redis_binary.get(job["pdf_key"])
+                if pdf_content is None:
+                    print(f"❌ PDF content not found for task {job['task_id']}")
+                    return None
+                
+                job["pdf_content"] = pdf_content
+                
+                # Update task status menjadi processing
+                self.update_task_progress(
+                    job["task_id"], 10, "Job picked up by worker", "processing"
+                )
+                
+                return job
+            
+            return None
+            
+        except Exception as e:
+            print(f"Error dequeuing job: {e}")
+            return None
+    
+    def get_queue_info(self) -> Dict[str, Any]:
+        """
+        Mendapatkan informasi tentang status queue
+        Returns:
+            Dict dengan informasi queue
+        """
+        try:
+            queue_size = self.redis_client.llen(Config.QUEUE_NAME)
+            
+            return {
+                "queue_size": queue_size,
+                "max_queue_size": Config.MAX_QUEUE_SIZE,
+                "queue_name": Config.QUEUE_NAME,
+                "is_full": queue_size >= Config.MAX_QUEUE_SIZE
+            }
+            
+        except Exception as e:
+            print(f"Error getting queue info: {e}")
+            return {
+                "queue_size": 0,
+                "max_queue_size": Config.MAX_QUEUE_SIZE,
+                "queue_name": Config.QUEUE_NAME,
+                "is_full": False,
+                "error": str(e)
+            }
+    
+    def cleanup_pdf_content(self, task_id: str):
+        """
+        Membersihkan PDF content dari Redis setelah processing selesai
+        Args:
+            task_id: ID task yang akan dibersihkan
+        """
+        try:
+            pdf_key = f"pdf_content:{task_id}"
+            self.redis_binary.delete(pdf_key)
+        except Exception as e:
+            print(f"Error cleaning up PDF content for task {task_id}: {e}")
+    
+    def clear_queue(self):
+        """
+        Membersihkan semua job dari queue (untuk debugging/maintenance)
+        """
+        try:
+            cleared_count = self.redis_client.delete(Config.QUEUE_NAME)
+            print(f"Cleared {cleared_count} items from queue")
+            return cleared_count
+        except Exception as e:
+            print(f"Error clearing queue: {e}")
+            return 0

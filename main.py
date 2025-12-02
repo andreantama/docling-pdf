@@ -1,21 +1,78 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import uvicorn
 import asyncio
+import threading
 from typing import Dict, Any
 import os
+import signal
 
 # Import custom modules
 from config import Config
 from redis_manager import RedisManager
 from pdf_extractor import PDFExtractor
+from worker import WorkerManager
 
-# Inisialisasi FastAPI app
+# Global instances
+redis_manager = None
+worker_manager = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan event handler"""
+    global redis_manager, worker_manager
+    
+    try:
+        print("🚀 Starting PDF Extraction API with Worker System...")
+        
+        # Inisialisasi Redis manager
+        redis_manager = RedisManager()
+        print("✅ Redis Manager initialized")
+        
+        # Setup signal handlers untuk graceful shutdown (hanya di main thread)
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        # Inisialisasi dan start worker system
+        if Config.ENABLE_WORKERS:
+            worker_manager = WorkerManager()
+            # Start workers dalam background task asyncio (bukan thread)
+            asyncio.create_task(worker_manager.start_workers())
+            print(f"✅ Worker system started with {Config.WORKER_COUNT} workers")
+        else:
+            print("⚠️ Worker system disabled")
+        
+        print("🎉 Application startup completed!")
+        
+        yield
+        
+    except Exception as e:
+        print(f"❌ Startup failed: {e}")
+        raise e
+    
+    # Shutdown
+    print("🛑 Shutting down PDF Extraction API...")
+    
+    if worker_manager:
+        await worker_manager.stop_workers()
+        print("✅ Workers stopped")
+    
+    print("🏁 Shutdown completed")
+
+def signal_handler(signum, frame):
+    """Signal handler untuk graceful shutdown"""
+    print(f"\n🛑 Received signal {signum}")
+    if worker_manager:
+        worker_manager.is_running = False
+
+# Inisialisasi FastAPI app dengan lifespan
 app = FastAPI(
     title="PDF Extraction API with Docling",
     description="API untuk ekstraksi data dari file PDF menggunakan Docling dengan progress tracking di Redis",
-    version="1.0.0"
+    version="2.0.0",
+    lifespan=lifespan
 )
 
 # CORS middleware untuk mengizinkan request dari frontend
@@ -27,69 +84,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global instances
-redis_manager = None
-pdf_extractor = None
 
-@app.on_event("startup")
-async def startup_event():
-    """
-    Event yang dijalankan saat aplikasi startup
-    Inisialisasi koneksi Redis dan PDF extractor
-    """
-    global redis_manager, pdf_extractor
-    
-    try:
-        print("🚀 Starting PDF Extraction API...")
-        
-        # Inisialisasi Redis manager
-        redis_manager = RedisManager()
-        print("✅ Redis Manager initialized")
-        
-        # Inisialisasi PDF extractor
-        pdf_extractor = PDFExtractor(redis_manager)
-        print("✅ PDF Extractor initialized")
-        
-        print("🎉 Application startup completed!")
-        
-    except Exception as e:
-        print(f"❌ Startup failed: {e}")
-        raise e
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """
-    Event yang dijalankan saat aplikasi shutdown
-    Cleanup resources jika diperlukan
-    """
-    print("🛑 Shutting down PDF Extraction API...")
-
-async def background_pdf_extraction(task_id: str, pdf_content: bytes, filename: str):
-    """
-    Background task untuk melakukan ekstraksi PDF
-    Dijalankan secara asynchronous agar tidak memblokir API response
-    Args:
-        task_id: ID unik untuk task
-        pdf_content: Binary content dari file PDF
-        filename: Nama file yang diupload
-    """
-    try:
-        # Jalankan ekstraksi PDF dengan progress tracking
-        await pdf_extractor.extract_pdf_async(task_id, pdf_content, filename)
-        print(f"✅ PDF extraction completed for task: {task_id}")
-        
-    except Exception as e:
-        print(f"❌ PDF extraction failed for task {task_id}: {e}")
-        # Update task sebagai failed jika terjadi error
-        redis_manager.complete_task(task_id, {"error": str(e)}, success=False)
 
 @app.post("/upload", response_model=Dict[str, Any])
-async def upload_pdf(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...)
-):
+async def upload_pdf(file: UploadFile = File(...)):
     """
-    Endpoint untuk upload file PDF dan memulai proses ekstraksi
+    Endpoint untuk upload file PDF dan menambahkan ke queue
     
     Args:
         file: File PDF yang diupload
@@ -120,26 +120,38 @@ async def upload_pdf(
                 detail="Invalid PDF file. File does not appear to be a valid PDF"
             )
         
+        # Cek status queue
+        queue_info = redis_manager.get_queue_info()
+        if queue_info["is_full"]:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Queue is full ({queue_info['queue_size']}/{queue_info['max_queue_size']}). Please try again later."
+            )
+        
         # Buat task baru di Redis
         task_id = redis_manager.create_task(file.filename)
         print(f"📄 New PDF upload task created: {task_id} for file: {file.filename}")
         
-        # Jalankan ekstraksi PDF sebagai background task
-        background_tasks.add_task(
-            background_pdf_extraction,
-            task_id,
-            file_content,
-            file.filename
-        )
+        # Tambahkan job ke queue untuk diproses oleh workers
+        success = redis_manager.enqueue_pdf_job(task_id, file_content, file.filename)
+        
+        if not success:
+            # Jika gagal enqueue, hapus task
+            redis_manager.delete_task(task_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Failed to add job to processing queue. Please try again later."
+            )
         
         # Return task_id untuk tracking
         return {
             "success": True,
-            "message": "PDF upload successful. Extraction started in background.",
+            "message": "PDF upload successful. Added to processing queue.",
             "task_id": task_id,
             "filename": file.filename,
             "file_size": len(file_content),
-            "status": "created"
+            "status": "queued",
+            "queue_position": queue_info["queue_size"] + 1
         }
         
     except HTTPException:
@@ -325,10 +337,24 @@ async def health_check():
         except:
             redis_status = "disconnected"
         
+        # Get worker status
+        worker_status = "disabled"
+        active_workers = 0
+        if worker_manager and Config.ENABLE_WORKERS:
+            worker_stats = worker_manager.get_all_stats()
+            active_workers = worker_stats["worker_manager"]["active_workers"]
+            worker_status = "running" if active_workers > 0 else "stopped"
+        
+        # Get queue info
+        queue_info = redis_manager.get_queue_info()
+        
         return {
             "success": True,
             "status": "healthy",
             "redis_status": redis_status,
+            "worker_status": worker_status,
+            "active_workers": active_workers,
+            "queue_size": queue_info["queue_size"],
             "message": "PDF Extraction API is running properly"
         }
         
@@ -339,6 +365,75 @@ async def health_check():
             "error": str(e)
         }
 
+@app.get("/workers", response_model=Dict[str, Any])
+async def get_worker_stats():
+    """
+    Endpoint untuk mendapatkan statistik workers
+    
+    Returns:
+        JSON response dengan statistik semua workers
+    """
+    try:
+        if not worker_manager or not Config.ENABLE_WORKERS:
+            return {
+                "success": False,
+                "message": "Worker system is disabled",
+                "workers_enabled": False
+            }
+        
+        stats = worker_manager.get_all_stats()
+        
+        return {
+            "success": True,
+            "workers_enabled": True,
+            "stats": stats
+        }
+        
+    except Exception as e:
+        print(f"❌ Worker stats error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get worker stats: {str(e)}")
+
+@app.get("/queue", response_model=Dict[str, Any])
+async def get_queue_info():
+    """
+    Endpoint untuk mendapatkan informasi queue
+    
+    Returns:
+        JSON response dengan informasi queue
+    """
+    try:
+        queue_info = redis_manager.get_queue_info()
+        
+        return {
+            "success": True,
+            "queue_info": queue_info
+        }
+        
+    except Exception as e:
+        print(f"❌ Queue info error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get queue info: {str(e)}")
+
+@app.post("/queue/clear", response_model=Dict[str, Any])
+async def clear_queue():
+    """
+    Endpoint untuk membersihkan queue (untuk debugging/maintenance)
+    
+    Returns:
+        JSON response konfirmasi pembersihan queue
+    """
+    try:
+        cleared_count = redis_manager.clear_queue()
+        
+        return {
+            "success": True,
+            "message": f"Queue cleared successfully. {cleared_count} jobs removed.",
+            "cleared_count": cleared_count
+        }
+        
+    except Exception as e:
+        print(f"❌ Clear queue error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear queue: {str(e)}")
+
 @app.get("/", response_model=Dict[str, Any])
 async def root():
     """
@@ -348,13 +443,21 @@ async def root():
         JSON response dengan informasi dasar API
     """
     return {
-        "message": "PDF Extraction API with Docling",
-        "version": "1.0.0",
+        "message": "PDF Extraction API with Docling and Worker System",
+        "version": "2.0.0",
+        "worker_system": {
+            "enabled": Config.ENABLE_WORKERS,
+            "worker_count": Config.WORKER_COUNT if Config.ENABLE_WORKERS else 0,
+            "poll_interval": Config.WORKER_POLL_INTERVAL
+        },
         "endpoints": {
             "upload": "POST /upload - Upload PDF file for extraction",
             "status": "GET /status/{task_id} - Check extraction progress",
             "result": "GET /result/{task_id} - Get extraction result",
             "tasks": "GET /tasks - List all tasks",
+            "workers": "GET /workers - Get worker statistics",
+            "queue": "GET /queue - Get queue information",
+            "clear_queue": "POST /queue/clear - Clear processing queue",
             "health": "GET /health - Health check",
             "delete": "DELETE /task/{task_id} - Delete task"
         },
@@ -366,10 +469,14 @@ if __name__ == "__main__":
     Entry point untuk menjalankan aplikasi
     Jalankan dengan: python main.py
     """
-    print("🚀 Starting PDF Extraction API server...")
+    print("🚀 Starting PDF Extraction API with Worker System...")
     print(f"📡 Server will run on: http://{Config.API_HOST}:{Config.API_PORT}")
     print(f"📚 API Documentation: http://{Config.API_HOST}:{Config.API_PORT}/docs")
     print(f"🔧 Redis: {Config.REDIS_HOST}:{Config.REDIS_PORT}")
+    print(f"👷 Workers: {Config.WORKER_COUNT if Config.ENABLE_WORKERS else 'Disabled'}")
+    if Config.ENABLE_WORKERS:
+        print(f"⏱️ Worker Poll Interval: {Config.WORKER_POLL_INTERVAL}s")
+        print(f"📋 Queue: {Config.QUEUE_NAME} (Max: {Config.MAX_QUEUE_SIZE})")
     
     # Jalankan server dengan uvicorn
     uvicorn.run(

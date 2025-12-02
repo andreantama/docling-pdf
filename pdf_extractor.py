@@ -2,6 +2,7 @@ import asyncio
 import tempfile
 import os
 import warnings
+import uuid
 from typing import Dict, Any
 from docling.document_converter import DocumentConverter
 from redis_manager import RedisManager
@@ -10,7 +11,6 @@ from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import PdfFormatOption
 from pathlib import Path
-import uuid
 import fitz  # PyMuPDF
 
 # Suppress specific warnings for page dimensions if configured
@@ -80,6 +80,49 @@ class PDFExtractor:
             page.set_mediabox(rect)
         
         return doc.tobytes()
+
+    async def extract_pdf_worker(self, job_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Method untuk worker yang memproses job dari queue
+        Args:
+            job_data: Data job dari queue yang berisi task_id, filename, dan pdf_content
+        Returns:
+            Dictionary hasil ekstraksi
+        """
+        task_id = job_data["task_id"]
+        filename = job_data["filename"]
+        pdf_content = job_data["pdf_content"]
+        
+        try:
+            print(f"🔧 Worker processing task: {task_id} for file: {filename}")
+            
+            # Panggil method ekstraksi yang sudah ada
+            result = await self.extract_pdf_async(task_id, pdf_content, filename)
+            
+            # Cleanup PDF content dari Redis
+            self.redis_manager.cleanup_pdf_content(task_id)
+            
+            print(f"✅ Worker completed task: {task_id}")
+            return result
+            
+        except Exception as e:
+            print(f"❌ Worker failed to process task {task_id}: {e}")
+            
+            # Handle error dan cleanup
+            error_result = {
+                "filename": filename,
+                "extraction_successful": False,
+                "error": str(e),
+                "data": None
+            }
+            
+            # Mark task sebagai failed
+            self.redis_manager.complete_task(task_id, error_result, success=False)
+            
+            # Cleanup PDF content dari Redis
+            self.redis_manager.cleanup_pdf_content(task_id)
+            
+            return error_result
 
     async def extract_pdf_async(self, task_id: str, pdf_content: bytes, filename: str) -> Dict[str, Any]:
         """
