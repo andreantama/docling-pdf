@@ -9,6 +9,9 @@ from config import Config
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import PdfFormatOption
+from pathlib import Path
+import uuid
+import fitz  # PyMuPDF
 
 # Suppress specific warnings for page dimensions if configured
 if Config.IGNORE_PAGE_DIMENSION_WARNINGS:
@@ -66,7 +69,18 @@ class PDFExtractor:
         # Validasi bahwa converter berhasil dibuat
         if not hasattr(self, 'converter') or self.converter is None:
             raise Exception("Failed to initialize PDF converter")
+
+    @staticmethod
+    def fix_pdf(input_bytes):
+        """Fix PDF page dimensions using PyMuPDF"""
+        doc = fitz.open(stream=input_bytes, filetype="pdf")
+        for page in doc:
+            rect = page.rect
+            page.set_cropbox(rect)
+            page.set_mediabox(rect)
         
+        return doc.tobytes()
+
     async def extract_pdf_async(self, task_id: str, pdf_content: bytes, filename: str) -> Dict[str, Any]:
         """
         Async method untuk ekstraksi PDF dengan progress tracking
@@ -86,10 +100,13 @@ class PDFExtractor:
                 "processing"
             )
             
-            # Simpan PDF ke temporary file karena Docling membutuhkan file path
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-                temp_file.write(pdf_content)
-                temp_file_path = temp_file.name
+            # Fix PDF dimensions before processing
+            fixed_pdf_content = self.fix_pdf(pdf_content)
+            
+            # Save fixed PDF to temporary file
+            temp_file_path = Path(tempfile.gettempdir()) / f"{uuid.uuid4()}.pdf"
+            temp_file_path.write_bytes(fixed_pdf_content)
+            temp_file_path = str(temp_file_path)  # Convert to string for compatibility
             
             try:
                 # Update progress: file preparation selesai
