@@ -6,6 +6,9 @@ from typing import Dict, Any
 from docling.document_converter import DocumentConverter
 from redis_manager import RedisManager
 from config import Config
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import PdfFormatOption
 
 # Suppress specific warnings for page dimensions if configured
 if Config.IGNORE_PAGE_DIMENSION_WARNINGS:
@@ -33,42 +36,36 @@ class PDFExtractor:
             redis_manager: Instance RedisManager untuk tracking progress
         """
         self.redis_manager = redis_manager
+        
         # Inisialisasi Docling converter dengan configuration
-        try:
-            from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import PdfPipelineOptions
-            from docling.document_converter import PdfFormatOption
-            
-            # Configure pipeline options dengan PyPDFium2 backend dan page dimension fixes
-            pipeline_options = PdfPipelineOptions(
-                pdf_backend='pypdfium2'  # Use PyPDFium2 for better page-dimensions handling
-            )
-            pipeline_options.artifacts_path = None  # Disable artifacts to avoid path issues
-            pipeline_options.do_ocr = False  # Disable OCR initially to avoid preprocessing issues
-            pipeline_options.do_table_structure = True  # Enable for FPDF documents
-            pipeline_options.table_structure_options.do_cell_matching = True
-            
-            # Optimized settings for PDFs with valid dimensions (like FPDF 1.86 output)
-            pipeline_options.generate_page_images = False  # Skip image generation for better performance
-            pipeline_options.generate_picture_images = False  # Skip picture processing
-            pipeline_options.images_scale = 1.0  # Use original image scale
-            
-            # Create converter dengan PyPDFium2 backend
-            self.converter = DocumentConverter(
-                format_options={
-                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-                }
-            )
-            print("✅ Docling converter initialized with enhanced PyPDFium2 configuration")
-            
-            # Log backend configuration details
-            backend_info = self.get_current_backend_info()
-            print(f"🔧 Backend configuration: {backend_info['backend_configured']}")
-        except Exception as config_error:
-            print(f"⚠️ Warning: Could not configure Docling optimally: {config_error}")
-            # Fallback to basic converter
-            self.converter = DocumentConverter()
-            print("✅ Docling converter initialized with basic configuration")
+        # Configure pipeline options dengan PyPDFium2 backend dan page dimension fixes
+        pipeline_options = PdfPipelineOptions(
+            pdf_backend='pypdfium2'  # Use PyPDFium2 for better page-dimensions handling
+        )
+        pipeline_options.artifacts_path = None  # Disable artifacts to avoid path issues
+        pipeline_options.do_ocr = False  # Disable OCR initially to avoid preprocessing issues
+        pipeline_options.do_table_structure = True  # Enable for FPDF documents
+        pipeline_options.table_structure_options.do_cell_matching = True
+        
+        # Optimized settings for PDFs with valid dimensions (like FPDF 1.86 output)
+        pipeline_options.generate_page_images = False  # Skip image generation for better performance
+        pipeline_options.generate_picture_images = False  # Skip picture processing
+        pipeline_options.images_scale = 1.0  # Use original image scale
+        
+        # Create converter dengan PyPDFium2 backend
+        self.converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
+        print("✅ Docling converter initialized with enhanced PyPDFium2 configuration")
+        
+        # Log backend configuration details
+        print(f"🔧 Backend configuration: pypdfium2 backend configured")
+        
+        # Validasi bahwa converter berhasil dibuat
+        if not hasattr(self, 'converter') or self.converter is None:
+            raise Exception("Failed to initialize PDF converter")
         
     async def extract_pdf_async(self, task_id: str, pdf_content: bytes, filename: str) -> Dict[str, Any]:
         """
@@ -133,7 +130,7 @@ class PDFExtractor:
                         optimization_notes.append("FPDF document detected - enabling enhanced table extraction")
                         print(f"🎯 FPDF document detected for {filename}: Producer = {validation_result['metadata']['producer']}")
                 
-                if warning_messages:
+                if warning_messages:    
                     print(f"⚠️ PDF warnings for {filename}: {', '.join(warning_messages)}")
                 if optimization_notes:
                     print(f"🚀 PDF optimization for {filename}: {', '.join(optimization_notes)}")
@@ -166,10 +163,22 @@ class PDFExtractor:
                 try:
                     # Verify backend configuration before conversion
                     print(f"🔍 Starting Docling conversion for: {filename}")
-                    print(f"🔧 Using backend: {getattr(self.converter.format_options.get('pdf', {}), 'pipeline_options', {}).pdf_backend if hasattr(self.converter, 'format_options') else 'default'}")
+                    
+                    # Get backend info from the configured format options
+                    backend_name = 'pypdfium2'  # We know this from __init__
+                    try:
+                        if hasattr(self.converter, 'format_options') and InputFormat.PDF in self.converter.format_options:
+                            pdf_option = self.converter.format_options[InputFormat.PDF]
+                            if hasattr(pdf_option, 'pipeline_options') and hasattr(pdf_option.pipeline_options, 'pdf_backend'):
+                                backend_name = pdf_option.pipeline_options.pdf_backend
+                    except:
+                        pass
+                    
+                    print(f"🔧 Using backend: {backend_name}")
                     
                     # Docling akan mengekstrak text, tables, images, dan metadata
                     result = self.converter.convert(temp_file_path)
+
                     print(f"✅ Docling conversion successful for: {filename}")
                 except Exception as docling_error:
                     error_msg = str(docling_error).lower()
@@ -181,6 +190,7 @@ class PDFExtractor:
                         try:
                             # Try to access result anyway
                             result = self.converter.convert(temp_file_path)
+
                         except:
                             # If still fails, proceed to backend fallback
                             pass
@@ -362,7 +372,7 @@ class PDFExtractor:
             )
             
             # Ekstrak full text dari document
-            full_text = doc.export_to_text()
+            full_text = doc.export_to_markdown()
             
             # Extract tables jika ada
             tables = []
