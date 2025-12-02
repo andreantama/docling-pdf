@@ -1,17 +1,33 @@
-# PDF Extraction API dengan Docling
+# PDF Extraction API with Worker System
 
-Project ini adalah API untuk melakukan ekstraksi data dari file PDF menggunakan Docling dengan progress tracking di Redis.
+Sistem ekstraksi PDF menggunakan Docling dengan arsitektur worker untuk processing yang scalable dan reliable.
+
+## 🎯 Fitur Utama
+
+- **Worker System**: Multiple workers untuk processing paralel
+- **Queue-based Processing**: PDF jobs diproses melalui Redis queue
+- **Scalable**: Dapat menambah/mengurangi jumlah worker sesuai kebutuhan
+- **Background Processing**: API langsung return response, processing di background
+- **Progress Tracking**: Real-time monitoring progress ekstraksi
+- **Rich Monitoring**: Statistics worker dan queue information
+
+## 🏗 Arsitektur
+
+```
+Client → API Upload → Redis Queue → Workers → PDF Extraction → Results Storage
+```
 
 ## 📁 Struktur Project
 
 ```
 /home/tama/Project/python/docling-pdf/
-├── main.py              # FastAPI application utama dengan semua endpoints
-├── config.py            # Konfigurasi aplikasi (Redis, upload settings, dll)
-├── redis_manager.py     # Manager untuk operasi Redis (progress tracking)
-├── pdf_extractor.py     # Module ekstraksi PDF menggunakan Docling
+├── main.py              # Base API dan Worker Manager dalam satu file
+├── worker.py            # Worker classes untuk memproses queue
+├── config.py            # Konfigurasi aplikasi (Redis, worker, upload settings)
+├── redis_manager.py     # Enhanced dengan queue management
+├── pdf_extractor.py     # Enhanced untuk worker mode
 ├── requirements.txt     # Dependencies Python
-├── .env-example         # Template environment variables
+├── .env.example         # Template environment variables
 ├── README.md           # Dokumentasi ini
 └── venv/               # Virtual environment (dibuat saat setup)
 ```
@@ -39,9 +55,16 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Setup Redis
-Pastikan Redis server berjalan di localhost:6379 (default), atau sesuaikan konfigurasi di `config.py`.
+### 3. Setup Environment
+```bash
+# Copy dan edit konfigurasi
+cp .env.example .env
+nano .env
 
+# Setup environment variables untuk worker system
+```
+
+### 4. Start Redis Server
 ```bash
 # Untuk Ubuntu/Debian:
 sudo apt install redis-server
@@ -55,97 +78,143 @@ brew services start redis
 # Download dan install Redis dari official website
 ```
 
-### 4. Jalankan API Server
+### 5. Start Application (API + Workers)
 ```bash
 # Pastikan virtual environment sudah aktif
-python main.py
+python3 main.py
 ```
+
+Application akan menjalankan:
+- FastAPI server di port 8000 (atau sesuai config)
+- Worker system dengan jumlah worker sesuai config  
+- Redis queue monitoring
+- Background processing workers
 
 Server akan berjalan di: http://localhost:8000
 
 **Note:** Untuk keluar dari virtual environment, gunakan command `deactivate`.
 
+## 🔧 Konfigurasi Worker System
+
+Sistem worker dapat dikonfigurasi melalui environment variables di file `.env`:
+
+```bash
+# Worker Configuration
+WORKER_COUNT=3                    # Jumlah worker (default: 3)
+WORKER_POLL_INTERVAL=2.0         # Interval polling queue dalam detik
+ENABLE_WORKERS=True              # Enable/disable worker system
+
+# Queue Configuration  
+QUEUE_NAME=pdf_extraction_queue  # Nama Redis queue
+MAX_QUEUE_SIZE=100              # Maksimal ukuran queue
+WORKER_TIMEOUT=300              # Timeout worker dalam detik
+
+# Redis Configuration
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_PASSWORD=
+
+# API Configuration
+API_HOST=0.0.0.0
+API_PORT=8000
+DEBUG=False
+
+# Upload Configuration
+MAX_FILE_SIZE=52428800  # 50MB
+```
+
 ## 📚 API Endpoints
 
-### 1. Upload PDF
+### Upload & Processing
 **POST** `/upload`
-- Upload file PDF untuk ekstraksi
+- Upload file PDF dan tambahkan ke queue
 - Returns: task_id untuk tracking progress
 
 ```bash
 curl -X POST "http://localhost:8000/upload" \
-     -F "file=@example.pdf"
+     -F "file=@sample.pdf"
 ```
 
-### 2. Check Status
-**GET** `/status/{task_id}`
-- Cek progress ekstraksi PDF
-- Returns: status, progress percentage, dan message
+### Monitoring & Status
+**GET** `/status/{task_id}` - Cek progress extraction
+**GET** `/result/{task_id}` - Ambil hasil extraction
+**GET** `/workers` - Statistik workers
+**GET** `/queue` - Informasi queue
+**GET** `/health` - Health check dengan info worker
+**GET** `/tasks` - List semua tasks
+
+### Management
+**DELETE** `/task/{task_id}` - Hapus task
+**POST** `/queue/clear` - Clear queue (debugging)
+
+## 🎮 Testing
 
 ```bash
-curl "http://localhost:8000/status/your-task-id"
+# Upload PDF
+curl -X POST "http://localhost:8000/upload" \
+     -F "file=@sample.pdf"
+
+# Cek status
+curl "http://localhost:8000/status/{task_id}"
+
+# Ambil hasil
+curl "http://localhost:8000/result/{task_id}"
+
+# Cek worker stats
+curl "http://localhost:8000/workers"
+
+# Cek queue info
+curl "http://localhost:8000/queue"
 ```
 
-### 3. Get Result
-**GET** `/result/{task_id}`
-- Ambil hasil ekstraksi PDF (jika sudah selesai)
-- Returns: extracted text, tables, images, metadata
+## 📊 Monitoring
 
-```bash
-curl "http://localhost:8000/result/your-task-id"
-```
+### Worker Statistics
+- Total processed jobs
+- Failed jobs count  
+- Success rate per worker
+- Current active tasks
+- Uptime information
 
-### 4. List Tasks
-**GET** `/tasks`
-- Lihat semua task yang ada
+### Queue Information
+- Current queue size
+- Queue capacity
+- Processing rate
 
-### 5. Health Check
-**GET** `/health`
-- Cek status kesehatan API dan Redis
+### Health Check
+- Redis connection status
+- Worker system status
+- Active workers count
 
-### 6. Delete Task
-**DELETE** `/task/{task_id}`
-- Hapus task dari Redis
+## 🎯 Keunggulan Sistem Worker
 
-## 🛠 Environment Variables
+1. **Scalability**: Dapat menambah worker sesuai kebutuhan
+2. **Reliability**: Jobs tersimpan di Redis, tidak hilang jika restart
+3. **Performance**: Processing paralel dengan multiple workers
+4. **Monitoring**: Rich monitoring dan statistics
+5. **Fault Tolerance**: Worker restart otomatis jika error
+6. **Simple Deployment**: Satu file untuk API dan worker system
 
-Anda bisa mengatur konfigurasi melalui environment variables. Copy `.env-example` ke `.env` dan isi nilai yang diperlukan:
-
-```bash
-cp .env-example .env
-# Edit file .env sesuai kebutuhan
-```
-
-Contoh konfigurasi:
-```bash
-export REDIS_HOST=localhost
-export REDIS_PORT=6379
-export REDIS_DB=0
-export MAX_FILE_SIZE=52428800  # 50MB
-export API_HOST=0.0.0.0
-export API_PORT=8000
-export DEBUG=False
-```
-
-## 📊 Progress Tracking
+## 📖 Progress Tracking
 
 Progress ekstraksi disimpan di Redis dengan tahapan:
-- 10%: Memulai ekstraksi
-- 25%: File preparation selesai  
-- 40%: Konversi dengan Docling dimulai
-- 70%: Konversi selesai, parsing data
-- 85%: Parsing selesai
-- 90%: Finalisasi
-- 100%: Selesai
+- 5%: Job added to queue
+- 10%: Job picked up by worker
+- 25%: Starting PDF extraction
+- 40%: PDF preprocessing completed
+- 70%: Docling conversion completed
+- 85%: Content parsing completed  
+- 100%: Extraction completed
 
 ## 🔍 Hasil Ekstraksi
 
 API mengekstrak data berikut dari PDF:
 - **Full Text**: Seluruh text dalam PDF
 - **Pages**: Text per halaman
-- **Tables**: Tabel yang ditemukan
+- **Tables**: Tabel yang ditemukan (jika ada)
 - **Images**: Informasi gambar
-- **Metadata**: Jumlah halaman, word count, dll
+- **Metadata**: Jumlah halaman, word count, character count
 
 ## 📖 Dokumentasi API
 
@@ -153,27 +222,39 @@ Buka browser dan akses: http://localhost:8000/docs untuk Swagger UI documentatio
 
 ## 🐛 Troubleshooting
 
+### Worker tidak berjalan
+- Cek `ENABLE_WORKERS=True` di config
+- Cek koneksi Redis dengan `curl http://localhost:8000/health`
+- Cek log worker untuk error
+
+### Queue penuh
+- Tingkatkan `MAX_QUEUE_SIZE` di .env
+- Tambah `WORKER_COUNT` untuk processing lebih cepat
+- Monitor processing rate dengan `/queue` endpoint
+
 ### Redis Connection Error
-- Pastikan Redis server berjalan
-- Cek konfigurasi host/port di `config.py`
+- Pastikan Redis server berjalan: `redis-cli ping`
+- Cek konfigurasi Redis di `.env`
+- Cek network connectivity
 
 ### PDF Upload Error
 - Pastikan file adalah PDF valid
-- Cek ukuran file tidak melebihi 50MB
+- Cek ukuran file tidak melebihi MAX_FILE_SIZE
 - Pastikan file tidak corrupt
 
 ### Docling Processing Issues
-Jika Docling menampilkan error "could not find page-dimensions", aplikasi akan tetap mencoba menyelesaikan ekstraksi. Jika gagal total, sistem akan otomatis menggunakan fallback PyMuPDF.
+Jika Docling menampilkan error "could not find page-dimensions", aplikasi akan tetap mencoba menyelesaikan ekstraksi menggunakan fallback PyMuPDF.
 
 ```bash
 # Jika ada masalah dengan dependencies
 pip install --upgrade docling
 pip install --upgrade PyMuPDF
+pip install --upgrade pypdfium2
 ```
 
 ### Installation Issues
-Jika ada konflik dependencies saat install, gunakan legacy resolver:
 ```bash
+# Jika ada konflik dependencies saat install
 pip install --use-deprecated=legacy-resolver -r requirements.txt
 ```
 
@@ -187,7 +268,30 @@ source venv/bin/activate  # Linux/macOS
 
 # Set DEBUG mode dan jalankan
 export DEBUG=True
-python main.py
+python3 main.py
 ```
 
 Mode debug mengaktifkan auto-reload saat file berubah.
+
+## 🚀 Production Deployment
+
+```bash
+# Setup production environment
+cp .env.example .env
+# Edit .env untuk production settings
+
+# Set production values
+export DEBUG=False
+export WORKER_COUNT=5           # Sesuaikan dengan CPU cores
+export MAX_QUEUE_SIZE=200       # Sesuaikan dengan traffic
+export WORKER_POLL_INTERVAL=1.0 # Faster polling untuk production
+
+# Start with process manager (contoh: systemd, supervisor, PM2)
+python3 main.py
+```
+
+Untuk production deployment, pertimbangkan menggunakan:
+- **Process Manager**: systemd, supervisor, atau PM2
+- **Reverse Proxy**: Nginx atau Apache  
+- **Load Balancer**: Jika menggunakan multiple instances
+- **Container**: Docker untuk deployment yang konsisten
