@@ -12,6 +12,7 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import PdfFormatOption
 from pathlib import Path
 import fitz  # PyMuPDF
+import re
 
 # Suppress specific warnings for page dimensions if configured
 if Config.IGNORE_PAGE_DIMENSION_WARNINGS:
@@ -80,6 +81,134 @@ class PDFExtractor:
             page.set_mediabox(rect)
         
         return doc.tobytes()
+
+    def clean_whitelist_pattern(self, text: str) -> str:
+        """
+        Clean text berdasarkan whitelist pattern yang diizinkan
+        Args:
+            text: Teks yang akan dibersihkan
+        Returns:
+            Teks yang sudah dibersihkan
+        """
+        whitelist_pattern = [
+            r'\n\n<!-- image -->\n\n<!-- image -->\n\n',
+            r'<!-- image -->\n\n<!-- image -->',
+            r'## PEMERINTAH PROVINSI JAWA TIMUR',
+            r'## RSUD Dr. Soetomo',
+            r'Jl. Mayjen. Prof. Dr. Moestopo 6-8 Surabaya Telp./Fax (031) 5501046 / (031) 5501180 - www.rsudrsoetomo.jatimprov.go.id'
+            r'\nJl. Mayjen Prof. Dr. Moestopo No.6-8, Airlangga, Kecamatan Gubeng, Kota Surabaya, Jawa Timur 60286\n',
+            r'\nPasien  WAJIB  melakukan  Pendaftaran  Online  maksimal  H-1  melalui  Aplikasi  Mobile  JKN  atau  Website  Rumah  Sakit: https://daftar.rsudrsoetomo.jatimprov.go.id . Informasi lebih lanjut dapat menghubungi Perawat Ruangan atau Petugas Pendaftaran.\n',
+            r'\nLangkah Pendaftaran via Mobile JKN:\n',
+            r'\nLangkah Pendaftaran via Web:\n',
+            r'\n4. Pilih Data Rujukan atau Kontrol\n',
+            r'\n5. Pilih Tanggal Rencana Kunjungan\n',
+            r'\n6. Pilih Jadwal Kunjungan\n',
+            r'\n7. Isi Data Diri dan Data Tambahan\n',
+            r'\n8. Konfirmasi dan Selesaikan Pendaftaran\n',
+            r'\n6. Pilih Dokter, dan\n',
+            r'\n1. Install Mobile JKN\n',
+            r'\n2. Pilih Pendaftaran Pelayanan\n',
+            r'\n3. Klik Faskes Rujukan Tingkat Lanjut\n',
+            r'\n4. Pilih Data Rujukan atau Kontrol\n',
+            r'\n5. Pilih Tanggal Rencana Kunjungan\n',
+            r'\n6. Pilih Dokter, dan\n',
+            r'\n7. Klik Daftar Pelayanan.\n',
+            r'\n1. Buka Browser dan Ketik Alamat Web\n',
+            r'\n2. Pilih Jaminan\n',
+            r'\n3. Masukkan Nomor Identitas\n',
+            r'\n4. Pilih Tanggal Berkunjung\n',
+            r'\n5. Pilih Poliklinik\n',
+            r'\n6. Pilih Sub Spesialis, dan\n',
+            r'\n7. Klik Daftar.\n',
+            r'\n## PENTING:\n',
+            r'\nPada hari kunjungan datang ke rumah sakit untuk check-in di anjungan paling cepat 60 menit sebelum perkiraan pelayanan yang tertera di pendaftaran online. Pasien yang tidak melakukan pendaftaran online tidak dapat dilayani.Telah diserahkan dan diterima salinan Ringkasan Pasien Pulang Rawat Inap\n',
+            r'\\_',
+            r'<!-- image -->\n',
+            r'<!-- image -->'
+
+        ]
+        for p in whitelist_pattern:
+            text = re.sub(p, '', text, flags=re.IGNORECASE)
+        
+        # Gabungkan banyak spasi/tab tetapi TIDAK menghapus newline
+        text = re.sub(r"[ \t]+", " ", text)
+        # Hapus newline kosong
+        text = re.sub(r"\n\s*\n", "\n", text)
+        # Replace ":\n" menjadi ":" (hilangkan newline)
+        text = self.clean_newline_afterandbefore_colon(text)
+
+        cleaned_text = text
+        return cleaned_text
+
+    def clean_newline_afterandbefore_colon(self, text: str) -> str:
+        """
+        Membersihkan newline yang muncul setelah dan sebelum tanda ":"
+        Args:
+            text: Teks yang akan dibersihkan
+        Returns:
+            Teks yang sudah dibersihkan
+        """
+        # Replace ":\n" menjadi ":" (hilangkan newline)
+        text = re.sub(r":\s*\n", ": ", text)
+        # Replace "\n:" menjadi ":" (hilangkan newline)
+        text = re.sub(r"\n\s*:", ":", text)
+        return text
+    
+
+    def clean_markdown_table(self, md_text):
+        """
+        Membersihkan markdown table dari PDF extraction:
+        - Menghapus garis pemisah (----)
+        - Normalisasi jumlah kolom
+        - Trim whitespace
+        - Mengembalikan list of dict (kolom -> value)
+        """
+
+        lines = md_text.split("\n")
+
+        cleaned_rows = []
+        header = None
+
+        for line in lines:
+            line = line.strip()
+
+            # Skip baris kosong
+            if not line:
+                continue
+
+            # Hanya proses baris yang mengandung pipe
+            if "|" not in line:
+                continue
+
+            # Hapus garis pemisah seperti: |------|-----|-----|
+            if re.match(r'^\|\s*-+', line.replace(" ", "")):
+                continue
+
+            # Pisahkan kolom
+            cols = [c.strip() for c in line.split("|") if c.strip()]
+
+            # Skip apabila kolom terlalu sedikit
+            if len(cols) < 2:
+                continue
+
+            # Deteksi header → header pertama yang valid
+            if header is None:
+                header = cols
+                continue
+
+            # Jika bukan header, maka ini data → ratakan panjangnya
+            while len(cols) < len(header):
+                cols.append("")  # tambahkan kolom kosong
+
+            # Jika lebih panjang dari header → potong
+            if len(cols) > len(header):
+                cols = cols[:len(header)]
+
+            # Simpan sebagai dict
+            row_dict = dict(zip(header, cols))
+            cleaned_rows.append(row_dict)
+
+        return cleaned_rows
 
     async def extract_pdf_worker(self, job_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -436,12 +565,25 @@ class PDFExtractor:
             
             # Extract tables jika ada
             tables = []
-            table_elements = [item for item in doc.texts if hasattr(item, 'label') and 'table' in str(item.label).lower()]
-            for table_elem in table_elements:
+            last_end = 0
+            TABLE_PATTERN = r"(\|.*?\n\|(?:\s*:?[-]+:?\s*\|)+.*?(?=\n[^|]|\Z))"
+            matches = list(re.finditer(TABLE_PATTERN, full_text, flags=re.DOTALL))
+
+            for match in matches:
+                start, end = match.span()
+
+                # Tambah table markdown
+                table_text = match.group(0).strip()
                 tables.append({
-                    "content": str(table_elem),
-                    "page": getattr(table_elem, 'page', 'unknown')
+                        "content": self.clean_whitelist_pattern(table_text),
+                        "page": 'unknown'
                 })
+
+                last_end = end
+            
+            # Ekstrak ulang full_text tanpa tabel
+            SAFE_TABLE_PATTERN = r"(?m)(^\|.+\|\s*\n\|[-:\s|]+\|(?:\n\|.+\|)+)"
+            full_text = re.sub(SAFE_TABLE_PATTERN, '', full_text)
             
             # Extract images info jika ada
             images = []
@@ -454,6 +596,8 @@ class PDFExtractor:
             
             # Parse per halaman
             pages = []
+        # hapus newline (\n) yang mengapit colon (:)
+            full_text = self.clean_newline_afterandbefore_colon(full_text)
             # Docling biasanya menyimpan informasi page dalam metadata
             # Kita akan split text berdasarkan page breaks atau estimasi
             text_lines = full_text.split('\n')
@@ -470,7 +614,7 @@ class PDFExtractor:
                 if len(current_page_lines) >= lines_per_page:
                     pages.append({
                         "page_number": current_page,
-                        "content": '\n'.join(current_page_lines),
+                        "content": self.clean_whitelist_pattern('\n'.join(current_page_lines)),
                         "line_count": len(current_page_lines)
                     })
                     current_page += 1
@@ -480,7 +624,7 @@ class PDFExtractor:
             if current_page_lines:
                 pages.append({
                     "page_number": current_page,
-                    "content": '\n'.join(current_page_lines),
+                    "content": self.clean_whitelist_pattern('\n'.join(current_page_lines)),
                     "line_count": len(current_page_lines)
                 })
             
@@ -492,7 +636,7 @@ class PDFExtractor:
             )
             
             return {
-                "full_text": full_text,
+                "full_text": self.clean_whitelist_pattern(full_text),
                 "pages": pages,
                 "tables": tables,
                 "images": images,
